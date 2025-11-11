@@ -1,135 +1,122 @@
-    .section .data              # seção de dados (variáveis globais)
-    .globl heap_start
-    .globl heap_end
+global setup_brk           
+global dismiss_brk
+global memory_alloc
+global memory_free
+global heap_start          ; variável global para início da heap
+global heap_end            ; variável global para fim atual da heap
 
-heap_start:
-    .quad 0                     # reserva uma quadword (8 bytes), inicilizada em 0
-heap_end:
-    .quad 0                     # outra quadword para armazenar o fim atual do brk
+section .data
+heap_start:    dq 0       ; 8 bytes (quadword) para armazenar o início da heap, inicializado a 0
+heap_end:      dq 0       ; 8 bytes para armazenar o fim atual da heap
 
-    .section .text              # seção de código
-    .globl setup_brk            # exporta a função setup_brk
-    .globl dismiss_brk          # exporta a função dismiss_brk
-    .globl memory_alloc         # exporta a função memory_alloc
-    .globl memory_free          # exporta a função memory_free
+section .text
 
-# void setup_brk: Obtém o brk atual (chamada de sistema brk(0) -> syscall número 12) e salva
+; void setup_brk()
 setup_brk:
-    movq $12, %rax              # rax = 12 => número da syscall `brk` em x86-64
-    xorq %rdi, %rdi             # rdi = 0 => argumento 0 para brk(0) - consulta brk atual
-    syscall
+    mov rax, 12            ; rax = 12 (syscall brk)
+    xor rdi, rdi           ; rdi = 0, brk(0) consulta endereço atual da heap
+    syscall                ; chama o kernel
 
-    movq %rax, heap_start(%rip) # [RIP + offset(heap_start)] = rax => grava heap_start = rax
-    movq %rax, heap_end(%rip)   # grava heap_end = rax
+    mov [heap_start], rax  ; salva endereço inicial da heap em heap_start
+    mov [heap_end], rax    ; heap_end inicialmente é igual ao início
+    ret                     ; retorna para a função chamadora
 
-    ret                         # retorno da função
-
-
-# void dismiss_brk: Restaura o brk para o valor salvo em heap_start
+; void dismiss_brk()
 dismiss_brk:
-    movq heap_start(%rip), %rdi  # rdi = heap_start (endereço original da heap)
-    movq $12, %rax               # rax = 12 => número da syscall `brk`
-    syscall
+    mov rdi, [heap_start]  ; rdi = endereço inicial da heap
+    mov rax, 12            ; syscall brk
+    syscall                ; restaura o brk para o início da heap
 
-    movq heap_start(%rip), %rax  # rax = heap_start (valor restaurado)
-    movq %rax, heap_end(%rip)    # heap_end = heap_start
+    mov rax, [heap_start]  ; atualiza rax com heap_start
+    mov [heap_end], rax    ; atualiza heap_end também
+    ret
 
-    ret                          # retorno da função
-
-
-# void* memory_alloc(unsigned long int bytes): Implementa a estratégia worst-fit para alocação na heap
+; void* memory_alloc(unsigned long bytes)
 memory_alloc:
-    push %rbx                    # salva ponteiro para bloco atual
-    push %r8                     # salva endereco do bloco worst fit
-    push %r9                     # salva tamanho do bloco worst fit
+    push rbx               ; salva rbx (usado para percorrer a heap)
+    push r8                ; salva r8 (endereço do maior bloco livre encontrado)
+    push r9                ; salva r9 (tamanho do maior bloco livre encontrado)
 
-    movq heap_start(%rip), %rbx  #rbx = início da heap
-    movq $0, %r8
-    movq $0, %r9
+    mov rbx, [rel heap_start]  ; rbx = início da heap
+    mov r8, 0                  ; inicializa endereço do maior bloco livre com 0
+    mov r9, 0                  ; inicializa tamanho do maior bloco livre com 0
 
-
-# Loop de busca do maior bloco livre (worst-fit)
+; loop de busca pelo maior bloco livre (worst-fit)
 .loop:
-    cmpq heap_end(%rip), %rbx    # compara para verificar se chegou ao fim da heap
-    jge .no_free_block           # se rbx >= heap_end, não há mais blocos
+    cmp rbx, [rel heap_end]    ; verifica se chegou ao final da heap
+    jge .no_free_block         ; se sim, pula para alocação de novo bloco
 
-    movb (%rbx), %al             # lê byte de uso (al)
-    movq 1(%rbx), %rsi           # lê tamanho do bloco (8 bytes)
+    mov al, [rbx]              ; lê byte de uso do bloco (0=livre,1=ocupado)
+    mov rsi, [rbx + 1]         ; lê tamanho do bloco (8 bytes)
 
-    cmpb $0, %al                # compara al com 0 para verificar o byte de uso (se está livre)
-    jne .next                    # se o bloco está ocupado, pula
+    cmp al, 0                  ; verifica se o bloco está livre
+    jne .next                  ; se ocupado, pula para o próximo bloco
 
-    cmpq %rdi, %rsi              # compara para verificar se tamanho encontrado (rsi) >= requisitado (rdi)
-    jb .next                     # salta para .next se o tamanho encontrado < requisitado
+    cmp rsi, rdi               ; verifica se o tamanho do bloco >= solicitado
+    jb .next                   ; se não, pula para o próximo bloco
 
-    cmpq %r9, %rsi              # compara para verificar se o tamanho enocntrado é maior que o atual
-    jbe .next                    # se não for maior, pula
+    cmp rsi, r9                ; verifica se o tamanho é maior que o maior encontrado
+    jbe .next                  ; se não, pula para o próximo bloco
 
-    movq %rbx, %r8               # se for maior, r8 = endereço do maior bloco
-    movq %rsi, %r9               # r9 = tamanho do maior bloco
+    mov r8, rbx                ; atualiza endereço do maior bloco livre
+    mov r9, rsi                ; atualiza tamanho do maior bloco livre
 
 .next:
-    leaq 9(%rbx, %rsi), %rbx     # avança: rbx = endereço do próximo bloco
-    jmp .loop                    # volta para o inicio do loop
+    lea rbx, [rbx + rsi + 9]   ; avança para o próximo bloco (dados + cabeçalho de 9 bytes)
+    jmp .loop                  ; repete o loop
 
-
-# Se não achou bloco livre, cria um novo bloco:
 .no_free_block:
-    cmpq $0, %r8                 # compara para verificar se o maior bloco está livre
-    jne .use_existing            # achou um bloco livre adequado
+    cmp r8, 0                  ; verifica se algum bloco livre foi encontrado
+    jne .use_existing          ; se sim, usa o bloco existente
 
-    # Se não achou o bloco livre, cria novo bloco no final da heap:
-    movq heap_end(%rip), %rbx    # rbx = heap_end
-    movb $1, (%rbx)              # marca byte de uso = 1 (ocupado)
-    movq %rdi, 1(%rbx)           # tamanho = bytes requisitados
+    ; caso não tenha bloco livre adequado, cria novo bloco no final da heap
+    mov rbx, [rel heap_end]    ; rbx = fim atual da heap
+    mov byte [rbx], 1          ; marca como ocupado
+    mov qword [rbx + 1], rdi   ; grava tamanho do bloco solicitado
 
-    leaq 9(%rbx, %rdi), %rsi    # novo fim da heap (header + dados)
-    movq %rsi, heap_end(%rip)   # heap_end = novo fim 
+    lea rsi, [rbx + rdi + 9]   ; calcula novo fim da heap (bloco + cabeçalho)
+    mov [rel heap_end], rsi    ; atualiza heap_end
 
-    # expande a heap com a syscall brk
-    movq $12, %rax
-    movq %rsi, %rdi
-    syscall
+    mov rax, 12                 ; syscall brk
+    mov rdi, rsi                ; rdi = novo fim da heap
+    syscall                     ; expande a heap
 
-    leaq 9(%rbx), %rax           # retorno = ponteiro para dados
+    lea rax, [rbx + 9]          ; ponteiro de retorno = início dos dados do bloco
     jmp .fim
 
-# usa bloco livre existente (worst fit encontrado) e divide se couber 10 bytes (9 de matadados + 1 de alocação)
+; usa bloco livre existente (worst-fit) e divide se houver espaço suficiente
 .use_existing:
-    movb $1, (%r8)               # marca bloco como ocupado (uso = 1)
-    movq %r9, %rsi               # rsi = tamanho total do bloco livre
-    subq %rdi, %rsi              # rsi = espaço restante do bloco depois da alocação
+    mov byte [r8], 1            ; marca o bloco como ocupado
+    mov rsi, r9                 ; rsi = tamanho total do bloco
+    sub rsi, rdi                ; rsi = espaço restante após a alocação
 
-    cmpq $10, %rsi               # compara para verificar se sobra >= 10 bytes
-    jl .no_split                 # se sobra < 10 bytes, não fragmenta o bloco
+    cmp rsi, 10                 ; verifica se sobra espaço suficiente para novo bloco (>=10)
+    jl .no_split                ; se não, não fragmenta
 
-    # Split do bloco:
-    movq %rdi, 1(%r8)            # define tamanho = solicitado
-    leaq 9(%r8, %rdi), %rbx      #rbx = endereço do novo bloco (após metadados)
-
-    movb $0, (%rbx)              # novo bloco: uso = 0 (livre)
-    subq $9, %rsi                # desconta metadados do espaço restante
-    movq %rsi, 1(%rbx)           # grava tamanho do novo bloco livre
+    mov qword [r8 + 1], rdi     ; define tamanho do bloco atual = solicitado
+    lea rbx, [r8 + rdi + 9]     ; calcula endereço do novo bloco
+    mov byte [rbx], 0           ; novo bloco livre
+    sub rsi, 9                   ; desconta cabeçalho
+    mov qword [rbx + 1], rsi     ; tamanho do novo bloco livre
     jmp .retornar
 
 .no_split:
-    movq %r9, 1(%r8)
+    mov qword [r8 + 1], r9      ; mantém tamanho original do bloco
 
 .retornar:
-    leaq 9(%r8), %rax            # retorno = endereço da área de dados
+    lea rax, [r8 + 9]           ; retorna ponteiro para início dos dados do bloco
     jmp .fim
 
 .fim:
-    pop %r9
-    pop %r8
-    pop %rbx
-    ret                          # retorno da função
+    pop r9
+    pop r8
+    pop rbx
+    ret
 
-
-# int memory_free(void *pointer): Marca um bloco ocupado como livre
+; int memory_free(void* ptr)
 memory_free:
-    movq %rdi, %rax              # rax = ponteiro recebido
-    subq $9, %rax                # volta 9 bytes (início do cabeçalho)
-    movb $0, (%rax)              # marca byte de uso = 0 (livre)
-    xorl %eax, %eax              # retorno = 0
-    ret                          # retorno da função
+    mov rax, rdi                ; rax = ponteiro do usuário
+    sub rax, 9                  ; retrocede para o início do cabeçalho
+    mov byte [rax], 0           ; marca como livre
+    xor eax, eax                ; retorna 0
+    ret
